@@ -1,5 +1,6 @@
 ﻿using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using OfficeOpenXml;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -12,7 +13,12 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
+using NPOI.HSSF.UserModel;
+using NPOI.SS.UserModel;
+using static WpfB1.ExcelDate;
 using Path = System.IO.Path;
+using DocumentFormat.OpenXml.InkML;
+using NPOI.HPSF;
 
 namespace WpfB1
 {
@@ -20,6 +26,7 @@ namespace WpfB1
     {
 
         LineContext db = new LineContext();
+        ApplicationDbContext Appdb = new ApplicationDbContext();
         public MainWindow()
         {
             InitializeComponent();
@@ -28,12 +35,9 @@ namespace WpfB1
         }
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            // гарантируем, что база данных создана
             db.Database.EnsureCreated();
-            // загружаем данные из БД
             db.Lines.Load();
-            // и устанавливаем данные в качестве контекста
-            //DataContext = db.Lines.Local.ToObservableCollection();
+            Appdb.Database.EnsureCreated();
         }
 
 
@@ -186,6 +190,183 @@ namespace WpfB1
             catch (DbUpdateException ex)
             {
                 MessageBox.Show(ex.InnerException?.Message);
+            }
+        }
+
+        static List<Account> ReadAccountsFromExcel(string filePath)
+        {
+            var accounts = new List<Account>();
+
+            using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read))
+            {
+                var workbook = new HSSFWorkbook(stream);
+                var worksheet = workbook.GetSheetAt(0); 
+
+                for (int row = 1; row <= worksheet.LastRowNum; row++) 
+                {
+                    var currentRow = worksheet.GetRow(row);
+
+                    if (currentRow == null)
+                    {
+                        continue;
+                    }
+
+                    var cellValue = currentRow.GetCell(0)?.ToString();
+                    if (string.IsNullOrWhiteSpace(cellValue) || !IsNumeric(cellValue))
+                    {
+                        continue;
+                    }
+
+                    var account = new Account
+                    {
+                        AccountNumber = cellValue,
+                        IncomingBalanceActive = TryParseDecimal(currentRow.GetCell(1)),
+                        IncomingBalancePassive = TryParseDecimal(currentRow.GetCell(2))
+                    };
+                    accounts.Add(account);
+                }
+            }
+
+            return accounts;
+        }
+
+        static List<Balance> ReadBalancesFromExcel(string filePath)
+        {
+            var balances = new List<Balance>();
+
+            using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read))
+            {
+                var workbook = new HSSFWorkbook(stream);
+                var worksheet = workbook.GetSheetAt(0);
+
+                for (int row = 1; row <= worksheet.LastRowNum; row++)
+                {
+                    var currentRow = worksheet.GetRow(row);
+
+                    if (currentRow == null)
+                    {
+                        continue;
+                    }
+
+                    var cellValue = currentRow.GetCell(0)?.ToString();
+                    if (string.IsNullOrWhiteSpace(cellValue) || !IsNumeric(cellValue))
+                    {
+                        continue;
+                    }
+
+                    var balance = new Balance
+                    {
+                        AccountNumber = cellValue,
+                        OutgoingBalanceActive = TryParseDecimal(currentRow.GetCell(5)),
+                        OutgoingBalancePassive = TryParseDecimal(currentRow.GetCell(6))
+                    };
+                    balances.Add(balance);
+                }
+            }
+
+            return balances;
+        }
+
+        static List<Turnover> ReadTurnoversFromExcel(string filePath)
+        {
+            var turnovers = new List<Turnover>();
+
+            using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read))
+            {
+                var workbook = new HSSFWorkbook(stream);
+                var worksheet = workbook.GetSheetAt(0);
+
+                for (int row = 1; row <= worksheet.LastRowNum; row++)
+                {
+                    var currentRow = worksheet.GetRow(row);
+
+                    if (currentRow == null)
+                    {
+                        continue;
+                    }
+
+                    var cellValue = currentRow.GetCell(0)?.ToString();
+                    if (string.IsNullOrWhiteSpace(cellValue) || !IsNumeric(cellValue))
+                    {
+                        continue;
+                    }
+
+                    var turnover = new Turnover
+                    {
+                        AccountNumber = cellValue,
+                        DebitTurnover = TryParseDecimal(currentRow.GetCell(3)),
+                        CreditTurnover = TryParseDecimal(currentRow.GetCell(4))
+                    };
+                    turnovers.Add(turnover);
+                }
+            }
+
+            return turnovers;
+        }
+
+
+        static bool IsNumeric(string str)
+        {
+            return decimal.TryParse(str, out _);
+        }
+        static decimal TryParseDecimal(ICell cell)
+        {
+            if (cell == null)
+            {
+                return 0;
+            }
+            switch (cell.CellType)
+            {
+                case CellType.Numeric:
+                    return (decimal)cell.NumericCellValue;
+
+                case CellType.String:
+                    string cellValue = cell.StringCellValue.Trim();
+                    if (decimal.TryParse(cellValue, out decimal result))
+                    {
+                        return result;
+                    }
+                    break;
+
+                case CellType.Formula:
+                    if (cell.CachedFormulaResultType == CellType.Numeric)
+                    {
+                        return (decimal)cell.NumericCellValue;
+                    }
+                    break;
+            }
+
+            return 0;
+        }
+        private void FromExcelToDatabase(object sender, RoutedEventArgs e)
+        {
+            var filePath = @"C:\ОСВ для тренинга.xls";
+
+            var accounts = ReadAccountsFromExcel(filePath);
+            var turnovers = ReadTurnoversFromExcel(filePath);
+            var balances = ReadBalancesFromExcel(filePath);
+
+            Appdb.Accounts.AddRange(accounts);
+            Appdb.Turnovers.AddRange(turnovers);
+            Appdb.Balances.AddRange(balances);
+
+            Appdb.SaveChanges();
+
+            LogFileMetadata(filePath);
+
+        }
+        private static readonly string LogFilePath = "file_metadata_log.txt";
+
+        public static void LogFileMetadata(string filePath)
+        {
+            string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(filePath);
+            var logEntry = $"{DateTime.Now}  -  {fileNameWithoutExtension}";
+
+            string LogFileFullPath = Path.Combine(Directory.GetCurrentDirectory(), LogFilePath);
+
+            using (var writer = new StreamWriter(LogFileFullPath, append: true))
+            {
+                writer.WriteLine(logEntry);
             }
         }
     }
